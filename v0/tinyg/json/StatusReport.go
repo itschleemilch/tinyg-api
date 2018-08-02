@@ -36,6 +36,9 @@ type TStatusReport struct {
 }
 
 func (dst *TStatusReport) UpdateFrom(src *TStatusReport) {
+	if src == nil {
+		return
+	}
 	if src.GCodeLineNo != nil {
 		dst.GCodeLineNo = src.GCodeLineNo
 	}

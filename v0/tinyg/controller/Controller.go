@@ -17,7 +17,7 @@
 package controller
 
 import (
-	"encoding/json"
+	"bufio"
 	"errors"
 	"fmt"
 	tgjson "github.com/itschleemilch/tinyg-api/v0/tinyg/json"
@@ -33,6 +33,7 @@ const (
 	pollMachinePositionInterval time.Duration = 3 * time.Second
 	pollWorkingPositionInterval time.Duration = 3 * time.Second
 	pollMachineOffsetInterval   time.Duration = 5 * time.Second
+	pollFullState               time.Duration = 10 * time.Second
 )
 
 // TinygController holds the internal hardware handels and publishes
@@ -75,6 +76,7 @@ func (o *TinygController) Open(portName string) (err error) {
 		go o.serialRxLoop()
 		go o.serialTxLoop()
 		o.SendCommand(tgjson.CommandEmptyLine) // Flush any unfinished command at tinyg rx buffer
+		o.SendCommand(tgjson.CommandSetFlowControlCts)
 		o.SendCommand(tgjson.CommandSetRxModeLine)
 	}
 	//})
@@ -87,59 +89,52 @@ func (o *TinygController) Close() {
 }
 
 func (o *TinygController) serialRxLoop() {
-	rxBuffer1 := make([]byte, 0)    // concat-ed reads
-	rxBuffer0 := make([]byte, 1000) // single read
-	for !o.exit {
-		nRead, err := o.port.Read(rxBuffer0)
-		if err == nil && nRead > 0 {
-			// combine previous received data:
-			rxBuffer1 = append(rxBuffer1, rxBuffer0[:nRead]...)
-			// check for new line
-			for j := 0; j < len(rxBuffer1); j++ {
-				if rxBuffer1[j] == '\n' {
-					jsonResponse := rxBuffer1[:j]
-					if len(rxBuffer1) >= j {
-						rxBuffer1 = rxBuffer1[j+1:]
-					} else {
-						rxBuffer1 = make([]byte, 0)
-					}
-					// Handle data
-					data, parseErr := tgjson.ParseResponse(jsonResponse)
-					if parseErr == nil {
-						o.lastResponseTime = time.Now()
-						o.tinygState.UpdateFrom(data) // overwrite buffered states with received values
-						encState, encErr := json.Marshal(&o.tinygState)
-						if encErr == nil {
-							fmt.Println(string(encState))
-							fmt.Println()
-							fmt.Println()
+	//rxBuffer1 := make([]byte, 0)    // concat-ed reads
+	//rxBuffer0 := make([]byte, 1000) // single read
+	lineScanner := bufio.NewScanner(o.port)
+	for !o.exit && lineScanner.Scan() {
+		// Handle data
+		jsonResponse := lineScanner.Text()
+		data, parseErr := tgjson.ParseResponse([]byte(jsonResponse))
+		if parseErr == nil {
+			o.lastResponseTime = time.Now()
+			o.tinygState.UpdateFrom(data) // overwrite buffered states with received values
+		} else {
+			fmt.Println("Input Error: ", jsonResponse)
+			fmt.Println(parseErr)
+		}
+		/*
+			nRead, err := o.port.Read(rxBuffer0)
+			if err == nil && nRead > 0 {
+				// combine previous received data:
+				rxBuffer1 = append(rxBuffer1, rxBuffer0[:nRead]...)
+				// check for new line
+				for j := 0; j < len(rxBuffer1); j++ {
+					if rxBuffer1[j] == '\n' {
+						jsonResponse := rxBuffer1[:j]
+						if len(rxBuffer1) >= j {
+							rxBuffer1 = rxBuffer1[j+1:]
 						} else {
-							panic(encErr)
+							rxBuffer1 = make([]byte, 0)
 						}
-					} else {
-						fmt.Println("Input Error: ", string(jsonResponse))
-						fmt.Println(parseErr)
+						// Handle data
+						data, parseErr := tgjson.ParseResponse(jsonResponse)
+						if parseErr == nil {
+							o.lastResponseTime = time.Now()
+							o.tinygState.UpdateFrom(data) // overwrite buffered states with received values
+						} else {
+							fmt.Println("Input Error: ", string(jsonResponse))
+							fmt.Println(parseErr)
+						}
 					}
 				}
 			}
-		}
+		*/
+
 	}
 }
 
 func (o *TinygController) serialTxLoop() {
-	go func() {
-		time.Sleep(1 * time.Second)
-		o.SendCommand(tgjson.CommandRequestExceptionReport)
-		o.SendCommand(tgjson.CommandRequestFirmwareVersion)
-		o.SendCommand(tgjson.CommandRequestStatus)
-		o.SendCommand(tgjson.CommandRequestMachineAbsolutePosition)
-		time.Sleep(2 * time.Second)
-		o.SendData("G0 X5")
-		time.Sleep(1 * time.Second)
-		o.SendCommand(tgjson.CommandRequestStatus)
-		o.SendCommand(tgjson.CommandRequestMachineAbsolutePosition)
-
-	}()
 	txChan := make(chan string, 16)
 	// Separate stream processing of (high priority) commands
 	go func() {
@@ -171,13 +166,69 @@ func (o *TinygController) serialTxLoop() {
 			}
 		}
 	}()
+	// Enable state polling
+	go o.statePolling()
 	// Actual output process:
 	for !o.exit {
 		cmd := <-txChan
 		if len(cmd) > 0 {
-			fmt.Println("Sending ", cmd)
 			cmd = string(append([]byte(cmd), []byte{0x0A}...)) // Append new line character
+			fmt.Println("TX: '", cmd, "'")
 			o.port.Write([]byte(cmd))
+		}
+	}
+}
+
+func (o *TinygController) statePolling() {
+	tickAbsMachineCoords := time.NewTicker(pollMachinePositionInterval)
+	defer tickAbsMachineCoords.Stop()
+	tickWorkingCoords := time.NewTicker(pollMachineOffsetInterval)
+	defer tickWorkingCoords.Stop()
+	tickOffsets := time.NewTicker(pollMachineOffsetInterval)
+	defer tickOffsets.Stop()
+	tickFullState := time.NewTicker(pollFullState)
+	defer tickFullState.Stop()
+	for !o.exit {
+		select {
+		case <-tickAbsMachineCoords.C:
+			o.SendCommand(tgjson.CommandRequestMachineAbsolutePosition)
+			break
+		case <-tickWorkingCoords.C:
+			o.SendCommand(tgjson.CommandRequestWorkingPosition)
+			break
+		case <-tickOffsets.C:
+			if o.tinygState.ResponseData.StatusReport != nil &&
+				o.tinygState.ResponseData.StatusReport.CoordinateSystem != nil {
+				switch *o.tinygState.ResponseData.StatusReport.CoordinateSystem {
+				case tgjson.CoordinateSystemG54:
+					o.SendCommand(tgjson.CommandRequestG54Offset)
+					break
+				case tgjson.CoordinateSystemG55:
+					o.SendCommand(tgjson.CommandRequestG55Offset)
+					break
+				case tgjson.CoordinateSystemG56:
+					o.SendCommand(tgjson.CommandRequestG56Offset)
+					break
+				case tgjson.CoordinateSystemG57:
+					o.SendCommand(tgjson.CommandRequestG57Offset)
+					break
+				case tgjson.CoordinateSystemG58:
+					o.SendCommand(tgjson.CommandRequestG58Offset)
+					break
+				case tgjson.CoordinateSystemG59:
+					o.SendCommand(tgjson.CommandRequestG59Offset)
+					break
+				default:
+					break
+				}
+			}
+			o.SendCommand(tgjson.CommandRequestG92Offset)
+			break
+		case <-tickFullState.C:
+			o.SendCommand(tgjson.CommandRequestStatus)
+			break
+		default:
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
 }
@@ -221,4 +272,8 @@ func (o *TinygController) FeedResume() error {
 
 func (o *TinygController) Online() bool {
 	return time.Now().Sub(o.lastResponseTime).Seconds() < 1.0
+}
+
+func (o *TinygController) StateJson() []byte {
+	return o.tinygState.Json()
 }

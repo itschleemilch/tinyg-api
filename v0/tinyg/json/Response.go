@@ -45,16 +45,6 @@ type TReceiveObjects struct {
 	RxMode                  *TRxMode       `json:"rxm"`
 }
 
-func (o *TReceiveObjects) updateOffset(dst *TOffset, src *TOffset) {
-	if src != nil {
-		if dst != nil {
-			dst.UpdateFrom(src)
-		} else {
-			dst = src
-		}
-	}
-}
-
 func (dst *TReceiveObjects) UpdateFrom(src *TReceiveObjects) {
 	if src.FirmwareVersion != nil {
 		dst.FirmwareVersion = src.FirmwareVersion
@@ -62,13 +52,10 @@ func (dst *TReceiveObjects) UpdateFrom(src *TReceiveObjects) {
 	if src.HardwarePlatform != nil {
 		dst.HardwarePlatform = src.HardwarePlatform
 	}
-	if src.StatusReport != nil {
-		if dst.StatusReport != nil {
-			dst.StatusReport.UpdateFrom(src.StatusReport)
-		} else {
-			dst.StatusReport = src.StatusReport
-		}
+	if dst.StatusReport == nil {
+		dst.StatusReport = &TStatusReport{}
 	}
+	dst.StatusReport.UpdateFrom(src.StatusReport)
 	if src.ExceptionReport != nil {
 		dst.ExceptionReport = src.ExceptionReport
 	}
@@ -78,16 +65,47 @@ func (dst *TReceiveObjects) UpdateFrom(src *TReceiveObjects) {
 	if src.RxBufferReport != nil {
 		dst.RxBufferReport = src.RxBufferReport
 	}
-	dst.updateOffset(dst.AbsoluteMachinePosition, src.AbsoluteMachinePosition)
-	dst.updateOffset(dst.WorkingPosition, src.WorkingPosition)
-	dst.updateOffset(dst.SavedPositionG28, src.SavedPositionG28)
-	dst.updateOffset(dst.SavedPositionG30, src.SavedPositionG30)
-	dst.updateOffset(dst.OffsetG54, src.OffsetG54)
-	dst.updateOffset(dst.OffsetG55, src.OffsetG55)
-	dst.updateOffset(dst.OffsetG56, src.OffsetG56)
-	dst.updateOffset(dst.OffsetG57, src.OffsetG57)
-	dst.updateOffset(dst.OffsetG58, src.OffsetG58)
-	dst.updateOffset(dst.OffsetG59, src.OffsetG59)
+	if dst.AbsoluteMachinePosition == nil {
+		dst.AbsoluteMachinePosition = &TOffset{}
+	}
+	if dst.WorkingPosition == nil {
+		dst.WorkingPosition = &TOffset{}
+	}
+	if dst.SavedPositionG28 == nil {
+		dst.SavedPositionG28 = &TOffset{}
+	}
+	if dst.SavedPositionG30 == nil {
+		dst.SavedPositionG30 = &TOffset{}
+	}
+	if dst.OffsetG54 == nil {
+		dst.OffsetG54 = &TOffset{}
+	}
+	if dst.OffsetG55 == nil {
+		dst.OffsetG55 = &TOffset{}
+	}
+	if dst.OffsetG56 == nil {
+		dst.OffsetG56 = &TOffset{}
+	}
+	if dst.OffsetG57 == nil {
+		dst.OffsetG57 = &TOffset{}
+	}
+	if dst.OffsetG58 == nil {
+		dst.OffsetG58 = &TOffset{}
+	}
+	if dst.OffsetG59 == nil {
+		dst.OffsetG59 = &TOffset{}
+	}
+
+	dst.AbsoluteMachinePosition.UpdateFrom(src.AbsoluteMachinePosition)
+	dst.WorkingPosition.UpdateFrom(src.WorkingPosition)
+	dst.SavedPositionG28.UpdateFrom(src.SavedPositionG28)
+	dst.SavedPositionG30.UpdateFrom(src.SavedPositionG30)
+	dst.OffsetG54.UpdateFrom(src.OffsetG54)
+	dst.OffsetG55.UpdateFrom(src.OffsetG55)
+	dst.OffsetG56.UpdateFrom(src.OffsetG56)
+	dst.OffsetG57.UpdateFrom(src.OffsetG57)
+	dst.OffsetG58.UpdateFrom(src.OffsetG58)
+	dst.OffsetG59.UpdateFrom(src.OffsetG59)
 	if src.RxMode != nil {
 		dst.RxMode = src.RxMode
 	}
@@ -103,6 +121,14 @@ type TResponse struct {
 func (dst *TResponse) UpdateFrom(src *TResponse) {
 	dst.ResponseFooter = src.ResponseFooter
 	dst.ResponseData.UpdateFrom(&src.ResponseData)
+}
+
+func (o *TResponse) Json() (jsonOut []byte) {
+	jsonOut, err := jsjson.Marshal(o)
+	if err != nil {
+		panic(err)
+	}
+	return
 }
 
 // ParseResponse parses raw json data to a TResponse.

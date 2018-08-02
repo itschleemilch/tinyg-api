@@ -46,4 +46,5 @@ const (
 	CommandFeedResume                                  = "~"
 	CommandQueueFlush                     TinygCommand = "%"
 	CommandFeedHoldQueueFlush             TinygCommand = "!%"
+	CommandSetFlowControlCts              TinygCommand = "{ex:2}"
 )

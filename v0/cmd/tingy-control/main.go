@@ -18,19 +18,55 @@
 package main
 
 import (
+	"fmt"
 	tinyg "github.com/itschleemilch/tinyg-api/v0/tinyg/controller"
-	"time"
+	"log"
+	"net/http"
+	"os"
 )
 
+var tgHandle *tinyg.TinygController
+
 func main() {
-	tg, err := tinyg.NewController()
+	var err error
+	tgHandle, err = tinyg.NewController()
 	if err != nil {
 		panic(err)
 	}
-	err = tg.Open("/dev/ttyUSB0")
-	defer tg.Close()
+	err = tgHandle.Open("/dev/ttyTinyg") // symbolic link to /dev/ttyUSBn, see https://unix.stackexchange.com/a/183492
+	defer tgHandle.Close()
 	if err != nil {
 		panic(err)
 	}
-	time.Sleep(10 * time.Second)
+
+	http.HandleFunc("/api/", apiHome)
+	http.HandleFunc("/api/state", apiState)
+	http.HandleFunc("/api/exit", apiExit)
+	http.HandleFunc("/api/gcode", apiGcode)
+
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
+func apiHome(w http.ResponseWriter, req *http.Request) {
+	fmt.Fprintf(w, "Api home. Use /api/state.")
+}
+
+func apiExit(w http.ResponseWriter, req *http.Request) {
+	os.Exit(0)
+}
+
+func apiGcode(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, private, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+
+	tgHandle.SendData(req.URL.RawQuery)
+	fmt.Fprintf(w, `{"ok": true}`)
+}
+
+func apiState(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, private, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Write(tgHandle.StateJson())
 }
