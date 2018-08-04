@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"github.com/itschleemilch/huanyango/v1/vfdio"
 	tgjson "github.com/itschleemilch/tinyg-api/v0/tinyg/json"
 	"github.com/jacobsa/go-serial/serial"
 	"io"
@@ -39,13 +40,16 @@ const (
 // TinygController holds the internal hardware handels and publishes
 // methods for control and getting the state of the machine.
 type TinygController struct {
-	port             io.ReadWriteCloser
-	once             sync.Once
-	dataQueue        chan string
-	commandQueue     chan string
-	exit             bool
-	tinygState       tgjson.TResponse
-	lastResponseTime time.Time
+	port               io.ReadWriteCloser
+	once               sync.Once
+	dataQueue          chan string
+	commandQueue       chan string
+	dataQueueEmptyFlag bool
+	exit               bool
+	tinygState         tgjson.TResponse
+	lastResponseTime   time.Time
+	// Optional reference to a Huanyan VFD
+	VfdOutput *vfdio.HyInverter
 }
 
 func NewController() (controller *TinygController, err error) {
@@ -78,6 +82,9 @@ func (o *TinygController) Open(portName string) (err error) {
 		o.SendCommand(tgjson.CommandEmptyLine) // Flush any unfinished command at tinyg rx buffer
 		o.SendCommand(tgjson.CommandSetFlowControlCts)
 		o.SendCommand(tgjson.CommandSetRxModeLine)
+		if o.VfdOutput != nil {
+			o.VfdOutput.GCode("S0M5")
+		}
 	}
 	//})
 	return
@@ -103,34 +110,6 @@ func (o *TinygController) serialRxLoop() {
 			fmt.Println("Input Error: ", jsonResponse)
 			fmt.Println(parseErr)
 		}
-		/*
-			nRead, err := o.port.Read(rxBuffer0)
-			if err == nil && nRead > 0 {
-				// combine previous received data:
-				rxBuffer1 = append(rxBuffer1, rxBuffer0[:nRead]...)
-				// check for new line
-				for j := 0; j < len(rxBuffer1); j++ {
-					if rxBuffer1[j] == '\n' {
-						jsonResponse := rxBuffer1[:j]
-						if len(rxBuffer1) >= j {
-							rxBuffer1 = rxBuffer1[j+1:]
-						} else {
-							rxBuffer1 = make([]byte, 0)
-						}
-						// Handle data
-						data, parseErr := tgjson.ParseResponse(jsonResponse)
-						if parseErr == nil {
-							o.lastResponseTime = time.Now()
-							o.tinygState.UpdateFrom(data) // overwrite buffered states with received values
-						} else {
-							fmt.Println("Input Error: ", string(jsonResponse))
-							fmt.Println(parseErr)
-						}
-					}
-				}
-			}
-		*/
-
 	}
 }
 
@@ -154,15 +133,41 @@ func (o *TinygController) serialTxLoop() {
 	// Seperate stream processing of (low priority) data commands
 	go func() {
 		for !o.exit {
-			newData := <-o.dataQueue
-			txChan <- newData
-			// Check number of free packet slots on tinyg:
-			if len(o.tinygState.ResponseFooter) == 3 { // check json footer format
-				for o.tinygState.ResponseFooter[2] < 4 { // always keep at least 3 slot free!
-					time.Sleep(100 * time.Millisecond)
+			if !o.dataQueueEmptyFlag {
+				newData := <-o.dataQueue
+				// Check number of free packet slots on tinyg:
+				if len(o.tinygState.ResponseFooter) == 3 { // check json footer format
+					for o.tinygState.ResponseFooter[2] < 4 { // always keep at least 3 slot free!
+						time.Sleep(100 * time.Millisecond)
+					}
+				} else {
+					time.Sleep(500 * time.Millisecond) // no free slot information received yet
 				}
+				// If a VFD is connected, output G-Code to the VFD processor
+				if o.VfdOutput != nil {
+					fmt.Println("Vfd detected")
+					vfdAccepted := o.VfdOutput.GCode(newData)
+					fmt.Println("Vfd waiting for acception...")
+					for !vfdAccepted {
+						time.Sleep(5 * time.Millisecond)
+						vfdAccepted = o.VfdOutput.GCode(newData)
+					}
+					vfdOk, _, _ := o.VfdOutput.Processed()
+					fmt.Println("Vfd waiting for processing...")
+					for !vfdOk {
+						time.Sleep(5 * time.Millisecond)
+						vfdOk, _, _ = o.VfdOutput.Processed()
+					}
+					fmt.Println("Vfd handled.")
+				}
+				// Finally if slot is free and VFD is set, output to tinyg
+				txChan <- newData
 			} else {
-				time.Sleep(500 * time.Millisecond) // no free slot information received yet
+				fmt.Println("Erasing queue...")
+				for len(o.dataQueue) > 0 {
+					<-o.dataQueue
+				}
+				o.dataQueueEmptyFlag = false
 			}
 		}
 	}()
@@ -177,6 +182,10 @@ func (o *TinygController) serialTxLoop() {
 			o.port.Write([]byte(cmd))
 		}
 	}
+}
+
+func (o *TinygController) ForceTxQueueEmpty() {
+	o.dataQueueEmptyFlag = true
 }
 
 func (o *TinygController) statePolling() {

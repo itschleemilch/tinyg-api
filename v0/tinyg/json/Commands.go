@@ -47,4 +47,5 @@ const (
 	CommandQueueFlush                     TinygCommand = "%"
 	CommandFeedHoldQueueFlush             TinygCommand = "!%"
 	CommandSetFlowControlCts              TinygCommand = "{ex:2}"
+	CommandHardwareReset                  TinygCommand = "\x18"
 )
