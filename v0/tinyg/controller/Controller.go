@@ -18,33 +18,36 @@ package controller
 
 import (
 	"bufio"
-	"errors"
-	"fmt"
+	"github.com/golang/glog"
 	"github.com/itschleemilch/huanyango/v1/vfdio"
 	tgjson "github.com/itschleemilch/tinyg-api/v0/tinyg/json"
 	"github.com/jacobsa/go-serial/serial"
 	"io"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const (
-	dataQueueLength             int           = 10000
-	cmdQueueLength              int           = 100
-	pollMachinePositionInterval time.Duration = 3 * time.Second
-	pollWorkingPositionInterval time.Duration = 3 * time.Second
-	pollMachineOffsetInterval   time.Duration = 5 * time.Second
-	pollFullState               time.Duration = 10 * time.Second
+	linesToSendDefault          int32         = 4
+	lineQueueLength             int           = 10000
+	pollMachinePositionInterval time.Duration = 5000 * time.Millisecond
+	pollWorkingPositionInterval time.Duration = 5000 * time.Millisecond
+	pollMachineOffsetInterval   time.Duration = 7000 * time.Millisecond
+	pollFullState               time.Duration = 5000 * time.Millisecond
 )
 
 // TinygController holds the internal hardware handels and publishes
 // methods for control and getting the state of the machine.
 type TinygController struct {
 	port               io.ReadWriteCloser
-	once               sync.Once
-	dataQueue          chan string
-	commandQueue       chan string
-	dataQueueEmptyFlag bool
+	writeLock          sync.Mutex
+	initOnce           sync.Once
+	lineQueue          chan string
+	lineQueueEmptyFlag bool
+	linesToSend        int32
+	lineQueueLock      sync.Mutex
 	exit               bool
 	tinygState         tgjson.TResponse
 	lastResponseTime   time.Time
@@ -61,131 +64,146 @@ func NewController() (controller *TinygController, err error) {
 // Open inits the hardware handels. A suitable portName could be "COM3" or "/dev/ttyUSB0"
 func (o *TinygController) Open(portName string) (err error) {
 	if o == nil {
-		fmt.Errorf("Open can not be called from a nil pointer")
+		glog.Error("Open can not be called from a nil pointer")
 	}
-	//o.once.Do(func() {
-	o.dataQueue = make(chan string, dataQueueLength)
-	o.commandQueue = make(chan string, cmdQueueLength)
-	portOptions := serial.OpenOptions{
-		PortName:          portName,
-		BaudRate:          115200,
-		DataBits:          8,
-		ParityMode:        serial.PARITY_NONE,
-		StopBits:          1,
-		RTSCTSFlowControl: true,
-		MinimumReadSize:   1,
-	}
-	o.port, err = serial.Open(portOptions)
-	if err == nil {
-		go o.serialRxLoop()
-		go o.serialTxLoop()
-		o.SendCommand(tgjson.CommandEmptyLine) // Flush any unfinished command at tinyg rx buffer
-		o.SendCommand(tgjson.CommandSetFlowControlCts)
-		o.SendCommand(tgjson.CommandSetRxModeLine)
-		if o.VfdOutput != nil {
-			o.VfdOutput.GCode("S0M5")
+	o.initOnce.Do(func() {
+		o.lineQueue = make(chan string, lineQueueLength)
+		o.linesToSend = linesToSendDefault
+		atomic.StoreInt32(&o.linesToSend, linesToSendDefault)
+		portOptions := serial.OpenOptions{
+			PortName:          portName,
+			BaudRate:          115200,
+			DataBits:          8,
+			ParityMode:        serial.PARITY_NONE,
+			StopBits:          1,
+			RTSCTSFlowControl: true,
+			MinimumReadSize:   1,
 		}
-	}
-	//})
+		o.port, err = serial.Open(portOptions)
+		if err == nil {
+			go o.serialRxLoop()
+			go o.serialTxLoop()
+			go o.statePolling()
+			if o.VfdOutput != nil {
+				o.VfdOutput.GCode("S0 M5")
+			}
+		} else {
+			glog.Error(err)
+		}
+	})
 	return
 }
 
 func (o *TinygController) Close() {
 	o.port.Close()
 	o.exit = true
+	o.initOnce = sync.Once{}
+	o.writeLock = sync.Mutex{}
+	o.lineQueueLock = sync.Mutex{}
 }
 
 func (o *TinygController) serialRxLoop() {
-	//rxBuffer1 := make([]byte, 0)    // concat-ed reads
-	//rxBuffer0 := make([]byte, 1000) // single read
 	lineScanner := bufio.NewScanner(o.port)
 	for !o.exit && lineScanner.Scan() {
 		// Handle data
 		jsonResponse := lineScanner.Text()
+		glog.Infoln("Tinyg Output: ", jsonResponse)
 		data, parseErr := tgjson.ParseResponse([]byte(jsonResponse))
 		if parseErr == nil {
 			o.lastResponseTime = time.Now()
+			if len(data.ResponseFooter) == 3 { // only react to fixed-interval status reports
+				linesToSendNow := atomic.LoadInt32(&o.linesToSend)
+				if linesToSendNow < linesToSendDefault {
+					atomic.AddInt32(&o.linesToSend, 1)
+				}
+			}
 			o.tinygState.UpdateFrom(data) // overwrite buffered states with received values
 		} else {
-			fmt.Println("Input Error: ", jsonResponse)
-			fmt.Println(parseErr)
+			glog.Warning("Input Error: ", jsonResponse, parseErr)
 		}
+	}
+}
+
+func (o *TinygController) handleVfdCommand(cmd string) {
+	// If a VFD is connected, output G-Code to the VFD processor
+	if o.VfdOutput != nil {
+		glog.Infoln("Vfd detected")
+		o.VfdOutput.GCodeWaiting(cmd)
+		vfdOk, _, _ := o.VfdOutput.Processed()
+		glog.Infoln("Vfd waiting for processing...")
+		for !vfdOk {
+			time.Sleep(5 * time.Millisecond)
+			vfdOk, _, _ = o.VfdOutput.Processed()
+		}
+		glog.Infoln("Vfd handled.")
 	}
 }
 
 func (o *TinygController) serialTxLoop() {
-	txChan := make(chan string, 16)
-	// Separate stream processing of (high priority) commands
-	go func() {
-		for !o.exit {
-			newCmd := <-o.commandQueue
-			txChan <- newCmd
-			// Check number of free packet slots on tinyg:
-			if len(o.tinygState.ResponseFooter) == 3 { // check json footer format
-				for o.tinygState.ResponseFooter[2] < 3 { // always keep at least 2 slot free!
-					time.Sleep(100 * time.Millisecond)
-				}
-			} else {
-				time.Sleep(100 * time.Millisecond) // no free slot information received yet
-			}
-		}
-	}()
-	// Seperate stream processing of (low priority) data commands
-	go func() {
-		for !o.exit {
-			if !o.dataQueueEmptyFlag {
-				newData := <-o.dataQueue
-				// Check number of free packet slots on tinyg:
-				if len(o.tinygState.ResponseFooter) == 3 { // check json footer format
-					for o.tinygState.ResponseFooter[2] < 4 { // always keep at least 3 slot free!
-						time.Sleep(100 * time.Millisecond)
-					}
-				} else {
-					time.Sleep(500 * time.Millisecond) // no free slot information received yet
-				}
-				// If a VFD is connected, output G-Code to the VFD processor
-				if o.VfdOutput != nil {
-					fmt.Println("Vfd detected")
-					vfdAccepted := o.VfdOutput.GCode(newData)
-					fmt.Println("Vfd waiting for acception...")
-					for !vfdAccepted {
-						time.Sleep(5 * time.Millisecond)
-						vfdAccepted = o.VfdOutput.GCode(newData)
-					}
-					vfdOk, _, _ := o.VfdOutput.Processed()
-					fmt.Println("Vfd waiting for processing...")
-					for !vfdOk {
-						time.Sleep(5 * time.Millisecond)
-						vfdOk, _, _ = o.VfdOutput.Processed()
-					}
-					fmt.Println("Vfd handled.")
-				}
-				// Finally if slot is free and VFD is set, output to tinyg
-				txChan <- newData
-			} else {
-				fmt.Println("Erasing queue...")
-				for len(o.dataQueue) > 0 {
-					<-o.dataQueue
-				}
-				o.dataQueueEmptyFlag = false
-			}
-		}
-	}()
-	// Enable state polling
-	go o.statePolling()
-	// Actual output process:
 	for !o.exit {
-		cmd := <-txChan
-		if len(cmd) > 0 {
-			cmd = string(append([]byte(cmd), []byte{0x0A}...)) // Append new line character
-			fmt.Println("TX: '", cmd, "'")
-			o.port.Write([]byte(cmd))
+		cmd := <-o.lineQueue
+		if o.lineQueueEmptyFlag {
+			for len(o.lineQueue) > 0 {
+				cmd = <-o.lineQueue
+			}
+			o.lineQueueEmptyFlag = false
+		} else {
+			if len(cmd) > 0 {
+				for o.linesToSend <= 0 {
+					time.Sleep(10 * time.Millisecond)
+				}
+				o.handleVfdCommand(cmd)
+				// Serial Output
+				cmd = string(append([]byte(cmd), []byte{0x0A}...)) // Append new line character
+				if !o.lineQueueEmptyFlag {                         // Again, check for flush flag
+					glog.Infoln("TX: '", cmd, "'")
+					o.writeLock.Lock()
+					o.port.Write([]byte(cmd))
+					o.writeLock.Unlock()
+					atomic.AddInt32(&o.linesToSend, -1)
+				}
+			}
 		}
 	}
+
 }
 
-func (o *TinygController) ForceTxQueueEmpty() {
-	o.dataQueueEmptyFlag = true
+func (o *TinygController) Flush() {
+	o.lineQueueEmptyFlag = true
+	o.writeLock.Lock()
+	o.port.Write([]byte{0x04})        // Send ^D flush command
+	o.port.Write([]byte("{clr:n}\n")) // Clear alarms
+	o.writeLock.Unlock()
+	atomic.StoreInt32(&o.linesToSend, linesToSendDefault)
+}
+
+// RefreshState sends all required commands to Tinyg for reconstructing
+// the full machine state.
+func (o *TinygController) RefreshState() {
+	go func() {
+		//o.SendCommandWaiting(tgjson.CommandEmptyLine) // Flush any unfinished command at tinyg rx buffer
+		//o.SendCommandWaiting(tgjson.CommandSetRxModeLine)
+		//o.SendCommandWaiting(tgjson.CommandSetFlowControlCts)
+		/*
+			o.SendCommandWaiting(tgjson.CommandRequestStatus)
+			o.SendCommandWaiting(tgjson.CommandRequestG54Offset)
+			o.SendCommandWaiting(tgjson.CommandRequestG55Offset)
+			o.SendCommandWaiting(tgjson.CommandRequestG56Offset)
+			o.SendCommandWaiting(tgjson.CommandRequestG57Offset)
+			o.SendCommandWaiting(tgjson.CommandRequestG58Offset)
+			o.SendCommandWaiting(tgjson.CommandRequestG59Offset)
+			o.SendCommandWaiting(tgjson.CommandRequestG92Offset)
+			o.SendCommandWaiting(tgjson.CommandRequestExceptionReport)
+			o.SendCommandWaiting(tgjson.CommandRequestQueueReport)
+			o.SendCommandWaiting(tgjson.CommandRequestRxBuffer)
+			o.SendCommandWaiting(tgjson.CommandRequestHardwarePlatform)
+			o.SendCommandWaiting(tgjson.CommandRequestHardwareVersion)
+			o.SendCommandWaiting(tgjson.CommandRequestPositionG28)
+			o.SendCommandWaiting(tgjson.CommandRequestPositionG28)
+			o.SendCommandWaiting(tgjson.CommandRequestWorkingPosition)
+			o.SendCommandWaiting(tgjson.CommandRequestMachineAbsolutePosition)
+		*/
+	}()
 }
 
 func (o *TinygController) statePolling() {
@@ -200,41 +218,41 @@ func (o *TinygController) statePolling() {
 	for !o.exit {
 		select {
 		case <-tickAbsMachineCoords.C:
-			o.SendCommand(tgjson.CommandRequestMachineAbsolutePosition)
+			o.write(tgjson.CommandRequestMachineAbsolutePosition, false)
 			break
 		case <-tickWorkingCoords.C:
-			o.SendCommand(tgjson.CommandRequestWorkingPosition)
+			o.write(tgjson.CommandRequestWorkingPosition, false)
 			break
 		case <-tickOffsets.C:
 			if o.tinygState.ResponseData.StatusReport != nil &&
 				o.tinygState.ResponseData.StatusReport.CoordinateSystem != nil {
 				switch *o.tinygState.ResponseData.StatusReport.CoordinateSystem {
 				case tgjson.CoordinateSystemG54:
-					o.SendCommand(tgjson.CommandRequestG54Offset)
+					o.write(tgjson.CommandRequestG54Offset, false)
 					break
 				case tgjson.CoordinateSystemG55:
-					o.SendCommand(tgjson.CommandRequestG55Offset)
+					o.write(tgjson.CommandRequestG55Offset, false)
 					break
 				case tgjson.CoordinateSystemG56:
-					o.SendCommand(tgjson.CommandRequestG56Offset)
+					o.write(tgjson.CommandRequestG56Offset, false)
 					break
 				case tgjson.CoordinateSystemG57:
-					o.SendCommand(tgjson.CommandRequestG57Offset)
+					o.write(tgjson.CommandRequestG57Offset, false)
 					break
 				case tgjson.CoordinateSystemG58:
-					o.SendCommand(tgjson.CommandRequestG58Offset)
+					o.write(tgjson.CommandRequestG58Offset, false)
 					break
 				case tgjson.CoordinateSystemG59:
-					o.SendCommand(tgjson.CommandRequestG59Offset)
+					o.write(tgjson.CommandRequestG59Offset, false)
 					break
 				default:
 					break
 				}
 			}
-			o.SendCommand(tgjson.CommandRequestG92Offset)
+			o.write(tgjson.CommandRequestG92Offset, false)
 			break
 		case <-tickFullState.C:
-			o.SendCommand(tgjson.CommandRequestStatus)
+			o.write(tgjson.CommandRequestStatus, false)
 			break
 		default:
 			time.Sleep(100 * time.Millisecond)
@@ -242,41 +260,72 @@ func (o *TinygController) statePolling() {
 	}
 }
 
-// SendCommand sends a raw command over the high priority queue. Do not send GCode!
-// Returns nil if the internal queue has accepted the command.
-func (o *TinygController) SendCommand(cmd tgjson.TinygCommand) error {
-	select {
-	case o.commandQueue <- string(cmd):
-		break
-	default:
-		return errors.New("Buffer full")
+func eraseGcodeComments(in string) string {
+	out1 := strings.Split(in, "(")
+	out2 := strings.Split(out1[0], ";")
+	return out2[0]
+}
+
+func (o *TinygController) writeLines(cmds []string, queue bool) (inserted bool) {
+	o.lineQueueLock.Lock()
+	if queue {
+		inserted = true
+
+	} else {
+		if len(o.lineQueue) == 0 {
+			inserted = true
+		}
 	}
-	return nil
+	if inserted {
+		for _, cmd := range cmds {
+			cmd = eraseGcodeComments(cmd)
+			cmd = strings.TrimSuffix(cmd, "\n")
+			cmd = strings.TrimSuffix(cmd, "\r")
+			cmd = strings.TrimSpace(cmd)
+			o.lineQueue <- cmd
+		}
+	}
+	o.lineQueueLock.Unlock()
+	return
+}
+
+func (o *TinygController) write(cmd string, queue bool) bool {
+	return o.writeLines([]string{cmd}, queue)
 }
 
 // SendData sends a raw command over the low priority queue.
-// Returns nil if the internal queue has accepted the command.
-func (o *TinygController) SendData(cmd string) error {
-	select {
-	case o.dataQueue <- cmd:
-		break
-	default:
-		return errors.New("Buffer full")
-	}
-	return nil
+// Returns true if the internal queue has accepted the command.
+func (o *TinygController) Write(cmd string) bool {
+	return o.write(cmd, true)
+}
+
+func (o *TinygController) WriteLines(cmds []string) bool {
+	return o.writeLines(cmds, true)
 }
 
 // TinygReset performs a software reset of the hardware.
 func (o *TinygController) TinygReset() error {
-	return o.SendCommand(tgjson.TinygCommand([]byte{24})) // 24	Ctrl-X	Cancel
+	o.writeLock.Lock()
+	o.port.Write([]byte{24}) // CTRL-X
+	o.writeLock.Unlock()
+	time.Sleep(5 * time.Second)
+	o.Flush()
+	return nil
 }
 
 func (o *TinygController) FeedHold() error {
-	return o.SendCommand(tgjson.CommandFeedHold)
+	o.writeLock.Lock()
+	o.port.Write([]byte{'!'})
+	o.writeLock.Unlock()
+	return nil
 }
 
 func (o *TinygController) FeedResume() error {
-	return o.SendCommand(tgjson.CommandFeedResume)
+	o.writeLock.Lock()
+	o.port.Write([]byte{'~'})
+	o.writeLock.Unlock()
+	return nil
+
 }
 
 func (o *TinygController) Online() bool {

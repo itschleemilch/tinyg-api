@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>TinyG on CNC6040</title>
+
+  <link rel="stylesheet" href="style.css">
+  <!--
+  <link rel="icon" href="images/favicon.png">
+  -->
+  <script src="node_modules/jquery/dist/jquery.min.js"></script>
+	<script type="text/javascript">
+		function loadState() {
+			$.getJSON("/api/state", function( data ) {
+				var machinePos = data["r"]["mpo"];
+				if (machinePos != null) {
+					machinePos.x = parseFloat(machinePos.x).toPrecision(6);
+					machinePos.y = parseFloat(machinePos.y).toPrecision(6);
+					machinePos.z = parseFloat(machinePos.z).toPrecision(6);
+					$('#DisplayMachineX').text(machinePos.x);
+					$('#DisplayMachineY').text(machinePos.y);
+					$('#DisplayMachineZ').text(machinePos.z);
+				}
+
+				var status = data["r"]["sr"];
+				if(status != null) {
+					$('#DisplayPositionX').text(parseFloat(status.posx).toPrecision(6));
+					$('#DisplayPositionY').text(parseFloat(status.posy).toPrecision(6));
+					$('#DisplayPositionZ').text(parseFloat(status.posz).toPrecision(6));
+					$('#DisplayFR').text(parseFloat(status.feed).toPrecision(6));
+					$('#DisplayVel').text(parseFloat(status.vel).toPrecision(6));
+					$('#DisplayLineNumber').text(status.line);
+
+					if(status.dist == 0) {
+						$('#SettingInputAbsolute').prop('checked', true);
+					} else {
+						$('#SettingInputIncremental').prop('checked', true);
+					}
+					$('#DisplayMachineState').text(status.stat);
+					$('#DisplayCoordSystem').text(status.coor);
+				}
+				if(data["f"].length == 3) {
+					var errCode = data["f"][1];
+					$('#DisplayErrorCode').text(errCode);
+				}
+			});
+		}
+		function init() {
+			window.setInterval(loadState, 500);
+			$('#ManualGCodeInput').on('keyup', function (e) {
+				if (e.keyCode == 13) { // Enter event
+					var gcode = $('#ManualGCodeInput').val();
+					$.get("/api/gcode?" + gcode, function(data) {
+						$('#ManualGCodeInput').val('').focus();
+					});
+				}
+			});
+		}
+	</script>
+</head>
+
+<body onload="init()">
+	<h1>CNC6040 Control Room</h1>
+
+	<p>
+		<h2>Machine Position</h2>
+
+		<div class="numDisplay big"><span class="name">X</span><span class="value" id="DisplayMachineX"></span></div>
+		<div class="numDisplay big"><span class="name">Y</span><span class="value" id="DisplayMachineY"></span></div>
+		<div class="numDisplay big"><span class="name">Z</span><span class="value" id="DisplayMachineZ"></span></div>
+	</p>
+	<p>
+		<h2>Work Position</h2>
+
+		<div class="numDisplay big"><span class="name">X</span><span class="value" id="DisplayPositionX"></span></div>
+		<div class="numDisplay big"><span class="name">Y</span><span class="value" id="DisplayPositionY"></span></div>
+		<div class="numDisplay big"><span class="name">Z</span><span class="value" id="DisplayPositionZ"></span></div>
+
+	</p>
+	<p>
+		<h2>Speed</h2>
+		<div class="numDisplay big"><span class="name">FR</span><span class="value" id="DisplayFR"></span></div>
+		<div class="numDisplay big"><span class="name">VEL</span><span class="value" id="DisplayVel"></span></div>
+	</p>
+	<p>
+		<h2>Settings</h2>
+		<div>
+			<div class="radioSetting">
+				<input type="radio" id="SettingInputIncremental" name="SettingInputIncAbs">
+				<label for="SettingInputIncremental">Incremental</label>
+			</div>
+			<div class="radioSetting">
+				<input type="radio" id="SettingInputAbsolute" name="SettingInputIncAbs">
+				<label for="SettingInputIncremental">Absolute</label>
+			</div>
+		</div>
+		<div class="numDisplay big"><span class="name">G53+</span><span class="value" id="DisplayCoordSystem"></span></div>
+	</p>
+	<p>
+		<h2>Automation</h2>
+		<div class="numDisplay big"><span class="name">N</span><span class="value" id="DisplayLineNumber"></span></div>
+		<div class="numDisplay big"><span class="name">State</span><span class="value" id="DisplayMachineState"></span></div>
+		<div class="numDisplay big"><span class="name">ERR</span><span class="value" id="DisplayErrorCode"></span></div>
+
+	</p>
+
+	<hr>
+	<p>
+		<h2>Control Center</h2>
+		<input type="text" class="GCodeLine" id="ManualGCodeInput"><br><br>
+		<a href="file.html">File Upload</a>
+	</p>
+
+</body>
+
+</html>
+

@@ -18,6 +18,7 @@ package json
 
 import (
 	jsjson "encoding/json"
+	"github.com/golang/glog"
 )
 
 // TReceiveObjects contains many of the possible return values
@@ -114,13 +115,26 @@ func (dst *TReceiveObjects) UpdateFrom(src *TReceiveObjects) {
 // TResponse is the central struct. It is used to store
 // data received from tinyg after sending a request or command.
 type TResponse struct {
-	ResponseData   TReceiveObjects `json:"r"`
-	ResponseFooter []int           `json:"f"`
+	ResponseData     TReceiveObjects `json:"r"`
+	ResponseFooter   []int           `json:"f"`
+	AutoStatusReport *TStatusReport  `json:"sr"`
 }
 
 func (dst *TResponse) UpdateFrom(src *TResponse) {
-	dst.ResponseFooter = src.ResponseFooter
+	if dst.ResponseFooter == nil {
+		dst.ResponseFooter = make([]int, 3)
+	}
+	//dst.ResponseFooter = src.ResponseFooter
+	if len(src.ResponseFooter) == 3 {
+		copy(dst.ResponseFooter, src.ResponseFooter)
+	} else if len(src.ResponseFooter) == 0 {
+	} else {
+		glog.Errorln("UpdateFrom: Response Footer has wrong length.")
+	}
 	dst.ResponseData.UpdateFrom(&src.ResponseData)
+	if src.AutoStatusReport != nil {
+		dst.ResponseData.StatusReport.UpdateFrom(src.AutoStatusReport)
+	}
 }
 
 func (o *TResponse) Json() (jsonOut []byte) {

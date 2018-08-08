@@ -20,12 +20,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/golang/glog"
 	"github.com/itschleemilch/huanyango/v1/vfdio"
 	tinyg "github.com/itschleemilch/tinyg-api/v0/tinyg/controller"
-	tgjson "github.com/itschleemilch/tinyg-api/v0/tinyg/json"
-	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 )
 
 var tgHandle *tinyg.TinygController
@@ -71,13 +72,17 @@ func main() {
 	http.HandleFunc("/api/state", apiState)
 	http.HandleFunc("/api/exit", apiExit)
 	http.HandleFunc("/api/gcode", apiGcode)
-	http.HandleFunc("/api/cmd", apiCommand)
+	http.HandleFunc("/api/file", apiGCodeFile)
 	http.HandleFunc("/api/halt", apiHalt)
 	http.HandleFunc("/api/continue", apiContinue)
 	http.HandleFunc("/api/stop", apiStop)
 	http.HandleFunc("/api/reset", apiReset)
 
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	fs := http.FileServer(http.Dir("static"))
+	http.Handle("/", fs)
+
+	fmt.Println("Starting Webserver...")
+	glog.Fatal(http.ListenAndServe(":8080", nil))
 }
 
 func apiHome(w http.ResponseWriter, req *http.Request) {
@@ -93,16 +98,8 @@ func apiGcode(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, private, max-age=0")
 	w.Header().Set("Pragma", "no-cache")
 
-	tgHandle.SendData(req.URL.RawQuery)
-	fmt.Fprintf(w, `{"ok": true}`)
-}
-
-func apiCommand(w http.ResponseWriter, req *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-cache, private, max-age=0")
-	w.Header().Set("Pragma", "no-cache")
-
-	tgHandle.SendCommand(tgjson.TinygCommand(req.URL.RawQuery))
+	cmd, _ := url.QueryUnescape(req.URL.RawQuery)
+	tgHandle.Write(cmd)
 	fmt.Fprintf(w, `{"ok": true}`)
 }
 
@@ -111,7 +108,7 @@ func apiHalt(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, private, max-age=0")
 	w.Header().Set("Pragma", "no-cache")
 
-	tgHandle.SendCommand(tgjson.CommandFeedHold)
+	tgHandle.FeedHold()
 	fmt.Fprintf(w, `{"ok": true}`)
 }
 
@@ -120,7 +117,7 @@ func apiContinue(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, private, max-age=0")
 	w.Header().Set("Pragma", "no-cache")
 
-	tgHandle.SendCommand(tgjson.CommandFeedResume)
+	tgHandle.FeedResume()
 	fmt.Fprintf(w, `{"ok": true}`)
 }
 
@@ -129,8 +126,7 @@ func apiStop(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, private, max-age=0")
 	w.Header().Set("Pragma", "no-cache")
 
-	tgHandle.SendCommand(tgjson.CommandFeedHoldQueueFlush)
-	tgHandle.ForceTxQueueEmpty()
+	tgHandle.Flush()
 	fmt.Fprintf(w, `{"ok": true}`)
 }
 
@@ -138,9 +134,7 @@ func apiReset(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-cache, private, max-age=0")
 	w.Header().Set("Pragma", "no-cache")
-
-	tgHandle.ForceTxQueueEmpty()
-	tgHandle.SendCommand(tgjson.CommandHardwareReset)
+	tgHandle.TinygReset()
 	fmt.Fprintf(w, `{"ok": true}`)
 }
 
@@ -149,4 +143,20 @@ func apiState(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, private, max-age=0")
 	w.Header().Set("Pragma", "no-cache")
 	w.Write(tgHandle.StateJson())
+}
+
+func apiGCodeFile(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, private, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+
+	req.ParseForm()
+
+	gcodes := strings.Split(req.Form.Get("gcode"), "\n")
+	for n, gcode := range gcodes {
+		glog.Infoln("Received GCode Line #", n, ": ", gcode)
+	}
+	tgHandle.WriteLines(gcodes)
+
+	fmt.Fprintf(w, `{"ok": true}`)
 }

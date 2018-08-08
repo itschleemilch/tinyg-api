@@ -1,0 +1,81 @@
+@import 'plexfont/css/ibm-plex.min.css';
+
+
+:root {
+	--AsmEccPaleOrange: #FFDC96;
+	--AsmEccDarkBlue: #0000C8;
+	--AsmEccApple: #33CC33;
+	--AsmEccMagenta: #F200F2;
+	--AsmEccPurple: #B000B0;
+	--AsmEccLightBlue: #32AAFF;
+	--AsmEccAmber: #FFBE00;
+	--AsmEccRed: #FF0000;
+	--AsmEccGrey000: #000000;
+	--AsmEccGrey037: #5F5F5F;
+	--AsmEccGrey050: #808080;
+	--AsmEccGrey075: #C0C0C0;
+	--AsmEccGrey090: #E6E6E6;
+	--AsmEccGrey100: #FFFFFF;
+	--cBackground: #E6E6E6;
+	--cText: #000000;
+	--cDisplayInactive: #C0C0C0;
+	--cDisplayActive: #5F5F5F;
+}
+
+body {
+	font-family: 'IBM Plex Sans', 'Helvetica Neue', Arial, sans-serif;
+	background-color: var(--cBackground)
+	color: var(--cText);
+	font-size: 14pt;
+}
+
+h1, h2, h3, h4, h5, h6 {
+	font-family: 'IBM Plex Sans Condensed', 'Helvetica Neue', Arial, sans-serif;
+}
+
+.numDisplay {
+	display: inline-block;
+}
+.numDisplay * {
+	border: 2pt solid var(--cDisplayInactive);
+	margin: 0;
+	padding: 0.5ex;
+}
+.numDisplay .name {
+	background-color: var(--cDisplayInactive);
+	border-right: 0;
+	padding-left: 1ex;
+	padding-right: 1ex;
+}
+.numDisplay .value {
+}
+
+.numDisplay .big {
+	font-size: 170%;
+}
+
+.value {
+	font-family: 'IBM Plex Mono', 'Menlo', 'DejaVu Sans Mono', 'Bitstream Vera Sans Mono', Courier, monospace;
+}
+
+.GCodeLine {
+	font-family: 'IBM Plex Mono', 'Menlo', 'DejaVu Sans Mono', 'Bitstream Vera Sans Mono', Courier, monospace;
+	font-size: 200%;
+	width: 90%;
+}
+
+.radioSetting {
+	background-color: var(--cDisplayInactive);
+	display: inline-block;
+	padding: 0.5ex;
+}
+.radioSetting > input {
+	/*display: none;*/
+}
+
+.radioSetting input:checked {
+	background-color: var(--cDisplayActive);
+
+}
+
+
