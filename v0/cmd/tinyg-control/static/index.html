@@ -48,6 +48,12 @@
 					$('#DisplayErrorCode').text(errCode);
 				}
 			});
+			$.getJSON("/api/vfd", function( data ) {
+				var rpm = data['rpm'];
+				var dir = data['dir'];
+				$('#DisplayVfd').text(parseFloat(rpm).toPrecision(6));
+
+			});
 		}
 		function init() {
 			window.setInterval(loadState, 500);
@@ -85,6 +91,7 @@
 		<h2>Speed</h2>
 		<div class="numDisplay big"><span class="name">FR</span><span class="value" id="DisplayFR"></span></div>
 		<div class="numDisplay big"><span class="name">VEL</span><span class="value" id="DisplayVel"></span></div>
+		<div class="numDisplay big"><span class="name">VFD</span><span class="value" id="DisplayVfd"></span></div>
 	</p>
 	<p>
 		<h2>Settings</h2>

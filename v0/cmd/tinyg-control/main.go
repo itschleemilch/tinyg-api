@@ -18,6 +18,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/golang/glog"
@@ -77,6 +78,7 @@ func main() {
 	http.HandleFunc("/api/continue", apiContinue)
 	http.HandleFunc("/api/stop", apiStop)
 	http.HandleFunc("/api/reset", apiReset)
+	http.HandleFunc("/api/vfd", apiSpindle)
 
 	fs := http.FileServer(http.Dir("static"))
 	http.Handle("/", fs)
@@ -159,4 +161,29 @@ func apiGCodeFile(w http.ResponseWriter, req *http.Request) {
 	tgHandle.WriteLines(gcodes)
 
 	fmt.Fprintf(w, `{"ok": true}`)
+}
+
+func apiSpindle(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, private, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+
+	values := make(map[string]int)
+	values["f_set"] = -1
+	values["f_is"] = -1
+	values["rpm"] = -1
+	values["dir"] = 0
+
+	if tgHandle.VfdOutput != nil {
+		values["rpm"] = int(tgHandle.VfdOutput.OutputRpm())
+		values["f_is"] = int(tgHandle.VfdOutput.OutputFrequency())
+		values["f_set"] = int(tgHandle.VfdOutput.FrequencySet())
+		values["dir"] = int(tgHandle.VfdOutput.DirectionSet())
+	}
+
+	jsonBytes, err := json.Marshal(values)
+	if err != nil {
+		panic(err)
+	}
+	w.Write(jsonBytes)
 }
