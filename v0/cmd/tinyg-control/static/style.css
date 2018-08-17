@@ -78,4 +78,26 @@ h1, h2, h3, h4, h5, h6 {
 
 }
 
+:link {
+    color: black;
+    padding: 3pt;
+    padding-left: 1em;
+    padding-right: 1em;
+    background-color: var(--cDisplayInactive);
+    text-decoration: none;
+    border-radius: 1ex;
+}
 
+/* visited link */
+a:visited {
+	color: black;
+}
+
+/* mouse over link */
+a:hover {
+	background-color: var(--cDisplayActive);
+}
+
+/* selected link */
+a:active {
+}
